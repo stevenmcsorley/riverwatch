@@ -128,6 +128,18 @@
 @media(prefers-reduced-motion:reduce){.leaflet-overlay-pane path.alert-marker-halo-primary,.leaflet-overlay-pane path.alert-marker-core-primary{animation:none}}
 .leaflet-overlay-pane path.river-current.rapid-rise{filter:drop-shadow(0 0 6px #ff4659)!important}
 .legend-rapid{height:3px!important;width:13px!important;border-radius:3px;background:#ff626e;box-shadow:0 0 7px #ff485d}
+@media(max-width:760px){
+  .map-card{height:42vh;min-height:310px}
+  .detail-header{display:flex;flex-direction:column;align-items:stretch;gap:8px}
+  .detail-header>div:first-child{min-width:0}
+  .alert-status-stack{display:flex;justify-items:start;justify-content:flex-start;align-items:center;flex-wrap:wrap;gap:6px}
+  .detail-header .severity-pill,.detail-header .trend-chip{white-space:normal}
+  .metric-row{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .metric-card{min-height:60px;padding:7px 4px;gap:4px}
+  .metric-icon{width:18px;height:18px}
+  .metric-card span{font-size:7px;line-height:1.2;white-space:normal}
+  .metric-card b{font-size:11px;line-height:1.15;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+}
 .map-expanded .workspace{height:calc(100dvh - 58px);min-height:0;padding-bottom:10px}
 .map-expanded .map-only{height:auto;min-height:0;flex:1}
 .map-expanded .map-card{height:100%;min-height:0}

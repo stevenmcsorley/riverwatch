@@ -134,15 +134,15 @@ function HistoryChart({ points, threshold, unit, rainfall }) {
 }
 
 function App() {
-  const [stations, setStations] = useState([]), [warnings, setWarnings] = useState([]), [selectedId, setSelectedId] = useState('2001'), [mapFocus, setMapFocus] = useState(null), [riverShape, setRiverShape] = useState(null), [alertPolygon, setAlertPolygon] = useState(null), [rainfall, setRainfall] = useState(null);
+  const [stations, setStations] = useState([]), [warnings, setWarnings] = useState([]), [selectedId, setSelectedId] = useState('2641'), [mapFocus, setMapFocus] = useState(null), [riverShape, setRiverShape] = useState(null), [alertPolygon, setAlertPolygon] = useState(null), [rainfall, setRainfall] = useState(null);
   const [providers, setProviders] = useState({ floodWarnings: 'loading', radar: 'loading', rainfall: 'loading' });
   const [measurements, setMeasurements] = useState({}), [history, setHistory] = useState([]), [rainFrames, setRainFrames] = useState([]), [rainIndex, setRainIndex] = useState(-1);
-  const [threshold, setThreshold] = useState(null), [query, setQuery] = useState(''), [layer, setLayer] = useState('satellite'), [radar, setRadar] = useState(false), [satellite, setSatellite] = useState(false), [radarOpacity, setRadarOpacity] = useState(0.72), [satelliteOpacity, setSatelliteOpacity] = useState(0.72), [riverOpacity, setRiverOpacity] = useState(0.4), [showGaugeMarkers, setShowGaugeMarkers] = useState(false);
+  const [threshold, setThreshold] = useState(null), [query, setQuery] = useState(''), [layer, setLayer] = useState('satellite'), [radar, setRadar] = useState(true), [satellite, setSatellite] = useState(false), [radarOpacity, setRadarOpacity] = useState(0.72), [satelliteOpacity, setSatelliteOpacity] = useState(0.72), [riverOpacity, setRiverOpacity] = useState(0.4), [showGaugeMarkers, setShowGaugeMarkers] = useState(false);
   const [loading, setLoading] = useState(true), [error, setError] = useState(''), [lastUpdate, setLastUpdate] = useState(null), [activeNav, setActiveNav] = useState('Map'), [playing, setPlaying] = useState(false), [cycleAlerts, setCycleAlerts] = useState(false), [fullMap, setFullMap] = useState(false), [showLayers, setShowLayers] = useState(false), [clock, setClock] = useState(new Date()), [socketStatus, setSocketStatus] = useState('connecting'), [focusedWarningId, setFocusedWarningId] = useState(null);
   const [showAlertMessage, setShowAlertMessage] = useState(false);
   const socketRef = useRef(null), initialFocusRef = useRef(false), focusedWarningIdRef = useRef(null), manualFocusRef = useRef(false), warningsRef = useRef([]);
 
-  const selected = stations.find(s => stationId(s) === selectedId) || stations.find(s => stationId(s) === '2001') || stations[0];
+  const selected = stations.find(s => stationId(s) === selectedId) || stations.find(s => stationId(s) === '2641') || stations[0];
   const selectedMeasure = selected?.levelMeasure;
   const currentReading = selected ? measurements[stationId(selected)] : null;
   const focusedWarning = warnings.find(w => (w.floodAreaID || w['@id']) === focusedWarningId) || null;
@@ -187,6 +187,7 @@ function App() {
     const primary = nextWarnings.find(w => Number(w.severityLevel) <= 3) || nextWarnings[0];
     const currentId = focusedWarningIdRef.current;
     const currentWarning = nextWarnings.find(w => (w.floodAreaID || w['@id']) === currentId);
+    const firstSnapshot = !initialFocusRef.current;
     const shouldFocusPrimary = primary && (
       !initialFocusRef.current ||
       (!manualFocusRef.current && (!currentWarning || Number(primary.severityLevel) < Number(currentWarning.severityLevel))) ||
@@ -204,9 +205,15 @@ function App() {
         ? { lat: Number(primary.lat), long: Number(primary.long) }
         : focusStation ? { lat: Number(focusStation.lat), long: Number(focusStation.long) } : { lat: 54.35, long: -3.3 };
       setMapFocus({ ...focusPoint, zoom: hasAlertLocation || focusStation ? 9.2 : 6, warningId: id });
+    } else if (firstSnapshot && rows.length) {
+      const homeStation = rows.find(s => stationId(s) === '2641') || rows[0];
+      setSelectedId(stationId(homeStation));
+      setMapFocus({ ...homeStation, zoom: 9.2 });
     } else if (currentId && !currentWarning && !primary) {
       focusedWarningIdRef.current = null; manualFocusRef.current = false;
-      setFocusedWarningId(null); setSelectedId('2001'); setMapFocus({ lat: 54.35, long: -3.3, zoom: 6 });
+      const homeStation = rows.find(s => stationId(s) === '2641') || rows[0];
+      setFocusedWarningId(null);
+      if (homeStation) { setSelectedId(stationId(homeStation)); setMapFocus({ ...homeStation, zoom: 9.2 }); }
     }
   }, []);
 

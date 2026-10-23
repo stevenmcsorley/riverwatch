@@ -36,7 +36,7 @@ The screenshots below show the dashboard on desktop and mobile. The original vis
 ## Dashboard
 
 - **UK map:** opens on a UK-wide view with the highest-severity active flood warning selected. Official warning-area points and selected gauge remain visible; the dense station layer is off by default and can be enabled in Layers. Select any warning to zoom into its area. A selected-river flow line and subdued Great Britain river network use published geometry. Search by station, river, catchment or town. Choose a dark map, terrain or satellite basemap.
-- **Weather layers:** toggle rainfall radar and animate recent frames. The separate Meteosat cloud layer shows near-real-time satellite imagery.
+- **Weather layers:** rainfall radar reflectivity starts on when the feed is available, and recent frames can be animated. The separate Meteosat cloud layer shows near-real-time satellite imagery.
 - **Gauge details:** latest measured level, recent rate of change, reading time and published typical-range high where the station supplies one.
 - **Hydrograph:** today's actual readings for the selected gauge, with bars for the nearest Environment Agency rainfall gauge when one is available within 30 km. The rainfall series is converted from its published accumulation interval to mm/h and identifies the gauge distance. The plotted river range follows the gauge readings; a typical-range reference outside that range is called out separately. Typical range is not a flood threshold.
 - **Official alerts:** current Environment Agency flood alerts and warnings, sorted by severity. The highest-severity active alert is focused on startup. Select any alert card or map point to fly to its published area coordinate and nearest reporting gauge.
