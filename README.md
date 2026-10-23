@@ -2,7 +2,7 @@
 
 RiverWatch is a visual UK river monitoring dashboard. Its first dashboard brings together live Environment Agency gauge readings and flood alerts with weather radar and Meteosat satellite imagery.
 
-![RiverWatch UK overview with the highest-severity flood alert selected, live rainfall and gauge readings, river network and hydrograph](docs/screenshots/dashboard.jpg)
+![Animated RiverWatch dashboard showing a central England flood alert with rising river levels and radar](docs/screenshots/riverwatch-demo.gif)
 
 ## Run it
 
@@ -68,7 +68,7 @@ src/
 server/
   server.mjs     Feed cache, WebSocket snapshots and selected-station data
 public/          Static assets
-docs/screenshots/ Desktop capture and demo video
+docs/screenshots/ Desktop capture, demo video and animated preview
 ```
 
 ## License
