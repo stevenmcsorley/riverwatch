@@ -1,0 +1,27 @@
+{
+  "name": "riverwatch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A live visual UK river and flood monitoring dashboard",
+  "scripts": {
+    "dev": "concurrently -k \"node server/server.mjs\" \"vite --host 0.0.0.0\"",
+    "build": "vite build",
+    "start": "node server/server.mjs",
+    "preview": "node server/server.mjs"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "lucide-react": "^0.561.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-leaflet": "^5.0.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
