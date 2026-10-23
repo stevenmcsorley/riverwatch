@@ -29,9 +29,9 @@ npm start
 
 The complete live application cannot run on GitHub Pages alone. Pages serves static files, while RiverWatch also needs the Node service in `server/server.mjs` to fetch and cache public data, provide gauge and river geometry endpoints, and stream dashboard updates. For a public deployment, host the frontend on Pages and the Node service on a separate host that supports persistent WebSocket connections, then configure the frontend to connect to that service. That remote-service configuration is not included yet; the supported setup today is running the app with `npm run dev` or `npm start` on a machine that can run Node.js.
 
-The screenshots below show the dashboard on desktop and mobile. The original visual reference is in [`docs/design-reference.png`](docs/design-reference.png).
+## Demo
 
-![RiverWatch mobile dashboard](docs/screenshots/mobile.jpg)
+The short screen recording shows the central England alert view with live radar playback: [Watch the RiverWatch demo (MP4)](docs/screenshots/riverwatch-demo.mp4). The original visual reference is in [`docs/design-reference.png`](docs/design-reference.png).
 
 ## Dashboard
 
@@ -68,7 +68,7 @@ src/
 server/
   server.mjs     Feed cache, WebSocket snapshots and selected-station data
 public/          Static assets
-docs/screenshots/ Dashboard capture
+docs/screenshots/ Desktop capture and demo video
 ```
 
 ## License
