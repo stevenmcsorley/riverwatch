@@ -238,7 +238,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/')) return sendJson(res, { error: 'Unknown API route' }, 404);
   const dist = path.join(root, 'dist');
   let file = path.join(dist, path.normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, ''));
-  if (!file.startsWith(`${dist}${path.sep}`) && file !== path.join(dist, 'index.html')) return sendJson(res, { error: 'Invalid path' }, 400);
+  if (file !== dist && !file.startsWith(`${dist}${path.sep}`)) return sendJson(res, { error: 'Invalid path' }, 400);
   try { if ((await stat(file)).isDirectory()) file = path.join(file, 'index.html'); }
   catch { file = path.join(dist, 'index.html'); }
   try {
