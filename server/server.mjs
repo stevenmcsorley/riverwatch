@@ -252,7 +252,7 @@ server.on('upgrade', (req, socket, head) => {
   if (new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname !== '/ws') { socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
 });
-server.listen(port, '0.0.0.0', () => console.log(`RiverWatch data/WebSocket server listening on http://localhost:${port}`));
+server.listen(port, '0.0.0.0', () => console.log(`RiverWatch data/WebSocket server listening on http://localhost:${server.address().port}`));
 refreshFeeds().catch(() => {});
 const poller = setInterval(() => refreshFeeds().catch(() => {}), REFRESH_MS);
 poller.unref();

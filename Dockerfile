@@ -3,7 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm test && npm run build
+RUN npm test && npm run build && npm run test:production
 
 FROM node:22-alpine AS production-dependencies
 WORKDIR /app
