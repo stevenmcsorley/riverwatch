@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CircleMarker, GeoJSON, MapContainer, TileLayer, Tooltip, WMSTileLayer, ZoomControl, useMap } from 'react-leaflet';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CircleMarker, GeoJSON, Popup, MapContainer, TileLayer, Tooltip, WMSTileLayer, ZoomControl, useMap } from 'react-leaflet';
 import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Bell, ChevronRight, Clock3, CloudRain, Database, Droplets, Gauge, Layers2, Map as MapIcon, Maximize2, Radio, Search, Settings2, Waves, X } from 'lucide-react';
+import { cachedData, loadData } from './data.js';
 const stationId = (s) => String(s.stationReference || s.notation || s['@id']?.split('/').pop() || '');
 const measureId = (m) => m?.['@id'] || '';
 const compactNum = (n) => new Intl.NumberFormat('en-GB').format(n || 0);
@@ -99,8 +100,8 @@ function ResizeMap({ expanded }) {
   return null;
 }
 
-function HistoryChart({ points, threshold, unit, rainfall }) {
-  const width = 840, height = 172, pad = { l: 44, r: 16, t: 14, b: 25 };
+const HistoryChart = memo(function HistoryChart({ points, threshold, unit, rainfall, compact = false }) {
+  const width = 840, height = compact ? 130 : 172, pad = { l: 44, r: 16, t: 14, b: 25 };
   const valid = points.filter(p => Number.isFinite(p.value));
   if (!valid.length) return <div className="chart-empty"><Activity size={18} /> Waiting for gauge history…</div>;
   const minRaw = Math.min(...valid.map(p => p.value));
@@ -131,9 +132,42 @@ function HistoryChart({ points, threshold, unit, rainfall }) {
     {valid.length > 0 && <circle cx={x(valid.length-1)} cy={y(valid.at(-1).value)} r="4.5" className="chart-live-dot"/>}
     <text x={pad.l} y={height-5} className="chart-label">{fmtTime(valid[0].dateTime)}</text><text x={width-pad.r} y={height-5} textAnchor="end" className="chart-label">{fmtTime(valid.at(-1).dateTime)}</text>
   </svg>;
-}
+});
 
 function App() {
+  const [briefing, setBriefing] = useState(null);
+  const [detailStatus, setDetailStatus] = useState('loading');
+  const [weatherStatus, setWeatherStatus] = useState('loading');
+  const [weatherWarnings, setWeatherWarnings] = useState([]), [showWeatherWarnings, setShowWeatherWarnings] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    const refresh = async () => {
+      try {
+        const response = await fetch('/api/weather-warnings', { signal: controller.signal });
+        if (!response.ok) throw new Error('Weather feed unavailable');
+        const data = await response.json();
+        setWeatherWarnings(data.warnings || []);
+        setWeatherStatus('ok');
+      } catch { if (!controller.signal.aborted) { setWeatherWarnings([]); setWeatherStatus('unavailable'); } }
+    };
+    refresh();
+    const timer = setInterval(refresh, 60 * 1000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    const refresh = async () => {
+      try {
+        const response = await fetch('/api/briefing', {signal: controller.signal});
+        if (!response.ok) throw new Error('Briefing unavailable');
+        const data = await response.json();
+        if (!controller.signal.aborted) setBriefing(data);
+      } catch { if (!controller.signal.aborted) setBriefing(null); }
+    };
+    refresh();
+    const timer = setInterval(refresh, 30_000);
+    return () => {controller.abort();clearInterval(timer);};
+  }, []);
   const [stations, setStations] = useState([]), [warnings, setWarnings] = useState([]), [selectedId, setSelectedId] = useState('2641'), [mapFocus, setMapFocus] = useState(null), [riverShape, setRiverShape] = useState(null), [alertPolygon, setAlertPolygon] = useState(null), [rainfall, setRainfall] = useState(null);
   const [providers, setProviders] = useState({ floodWarnings: 'loading', radar: 'loading', rainfall: 'loading' });
   const [measurements, setMeasurements] = useState({}), [history, setHistory] = useState([]), [rainFrames, setRainFrames] = useState([]), [rainIndex, setRainIndex] = useState(-1);
@@ -142,6 +176,7 @@ function App() {
   const [showAlertMessage, setShowAlertMessage] = useState(false);
   const socketRef = useRef(null), initialFocusRef = useRef(false), focusedWarningIdRef = useRef(null), manualFocusRef = useRef(false), warningsRef = useRef([]);
 
+  const weatherHasPolygons = weatherWarnings.some(w => w.geometry);
   const selected = stations.find(s => stationId(s) === selectedId) || stations.find(s => stationId(s) === '2641') || stations[0];
   const selectedMeasure = selected?.levelMeasure;
   const currentReading = selected ? measurements[stationId(selected)] : null;
@@ -169,6 +204,7 @@ function App() {
 
   const acceptSnapshot = useCallback(data => {
     const rows = data.stations || [];
+
     setStations(rows);
     const nextMeasurements = {};
     rows.forEach(s => { if (s.reading && Number.isFinite(Number(s.reading.value))) nextMeasurements[stationId(s)] = { value: Number(s.reading.value), dateTime: s.reading.dateTime, measure: measureId(s.levelMeasure) }; });
@@ -250,26 +286,31 @@ function App() {
   useEffect(() => {
     if (!selectedMeasure) return;
     const controller = new AbortController();
-    const loadDetail = async () => {
-      try {
-        const response = await fetch(`/api/station/${encodeURIComponent(stationId(selected))}`, { signal: controller.signal });
-        if (!response.ok) throw new Error(`Local data server returned ${response.status}`);
-        const result = await response.json();
-        setHistory(result.history || []); setRainfall(result.rainfall || null);
-        setThreshold(result.typicalRangeHigh !== null && result.typicalRangeHigh !== undefined && Number.isFinite(Number(result.typicalRangeHigh)) ? Number(result.typicalRangeHigh) : null);
-      } catch (e) { if (e.name !== 'AbortError') { setHistory([]); setThreshold(null); setRainfall(null); } }
+    const url = `/api/station/${encodeURIComponent(stationId(selected))}`;
+    const apply = result => {
+      setDetailStatus('ok');
+      setHistory(result.history || []); setRainfall(result.rainfall || null);
+      setThreshold(result.typicalRangeHigh != null && Number.isFinite(Number(result.typicalRangeHigh)) ? Number(result.typicalRangeHigh) : null);
     };
-    loadDetail(); return () => controller.abort();
+    const cached = cachedData(url);
+    if (cached) apply(cached);
+    else { setDetailStatus('loading'); setHistory([]); setRainfall(null); setThreshold(null); }
+    const loadDetail = async () => {
+      try { const result = await loadData(url); if (!controller.signal.aborted) apply(result); }
+      catch { if (!controller.signal.aborted) setDetailStatus('unavailable'); }
+    };
+    loadDetail();
+    const timer = setInterval(loadDetail, 60_000);
+    return () => { controller.abort(); clearInterval(timer); };
   }, [selectedMeasure?.['@id'], selected?.stationReference]);
 
   useEffect(() => {
     if (!selected?.riverName) { setRiverShape(null); return; }
     const controller = new AbortController();
     setRiverShape(null);
-    fetch(`/api/river?name=${encodeURIComponent(selected.riverName)}`, { signal: controller.signal })
-      .then(r => { if (!r.ok) throw new Error(`River geometry request returned ${r.status}`); return r.json(); })
+    loadData(`/api/river?name=${encodeURIComponent(selected.riverName)}`, 6 * 60 * 60 * 1000)
       .then(data => { if (!controller.signal.aborted) setRiverShape(data); })
-      .catch(error => { if (error.name !== 'AbortError') setRiverShape(null); });
+      .catch(error => { if (!controller.signal.aborted) setRiverShape(null); });
     return () => controller.abort();
   }, [selected?.riverName]);
 
@@ -277,10 +318,9 @@ function App() {
     if (!focusedWarningId) { setAlertPolygon(null); return; }
     const controller = new AbortController();
     setAlertPolygon(null);
-    fetch(`/api/alert/${encodeURIComponent(String(focusedWarningId).split('/').at(-1))}`, { signal: controller.signal })
-      .then(r => { if (!r.ok) throw new Error(`Flood-area boundary returned ${r.status}`); return r.json(); })
+    loadData(`/api/alert/${encodeURIComponent(String(focusedWarningId).split('/').at(-1))}`, 60 * 60 * 1000)
       .then(shape => { if (!controller.signal.aborted && shape?.type === 'FeatureCollection') setAlertPolygon(shape); })
-      .catch(error => { if (error.name !== 'AbortError') setAlertPolygon(null); });
+      .catch(error => { if (!controller.signal.aborted) setAlertPolygon(null); });
     return () => controller.abort();
   }, [focusedWarningId]);
 
@@ -304,9 +344,9 @@ function App() {
       const q = query.trim().toLowerCase();
       list = list.filter(s => `${s.label} ${s.riverName} ${s.town} ${s.catchmentName} ${stationId(s)}`.toLowerCase().includes(q));
     }
-    return list.slice(0, query ? 220 : 700);
+    return list;
   }, [stations, query]);
-  const selectStation = (s) => { manualFocusRef.current = true; focusedWarningIdRef.current = null; setSelectedId(stationId(s)); setMapFocus(s); setFocusedWarningId(null); setActiveNav('Map'); };
+  const selectStation = useCallback((s) => { manualFocusRef.current = true; focusedWarningIdRef.current = null; setSelectedId(stationId(s)); setMapFocus(s); setFocusedWarningId(null); setActiveNav('Map'); }, []);
   const focusWarning = (w) => {
     const id = w.floodAreaID || w['@id'];
     manualFocusRef.current = true; focusedWarningIdRef.current = id;
@@ -343,7 +383,7 @@ function App() {
     const age = (Date.now() - new Date(stamp).getTime()) / 3600000;
     return count + (bucket === 0 ? age <= 1 : bucket === 1 ? age > 1 && age <= 6 : age > 6 ? 1 : 0);
   }, 0));
-  const statusCopy = activeWarning ? `${activeWarning.severity}${focusedWarning ? ' in focus' : ' nearby'}` : levelState === 'elevated' ? 'Above typical range' : 'Within typical range';
+  const statusCopy = selected?.provider === 'SEPA' ? 'Scottish gauge · SEPA' : activeWarning ? `${activeWarning.severity}${focusedWarning ? ' in focus' : ' nearby'}` : levelState === 'elevated' ? 'Above typical range' : 'Within typical range';
   const useMain = activeNav === 'Stations' ? 'Stations' : activeNav === 'Alerts' ? 'Alerts' : activeNav === 'History' ? 'History' : 'Map';
 
   return <div className={`app-shell ${fullMap ? 'map-expanded' : ''}`}>
@@ -359,12 +399,12 @@ function App() {
     <aside className="sidebar">
       <div className="nav-group">MONITOR</div>
       {[['Overview',Gauge],['Map',MapIcon],['Stations',Database],['Alerts',Bell],['History',Activity]].map(([name,Icon])=><button key={name} className={`nav-item ${activeNav===name?'selected':''}`} onClick={()=>setActiveNav(name)}><Icon size={18}/><span>{name}</span>{name==='Alerts'&&providers.floodWarnings==='ok'&&filteredFloods.length>0&&<b className="nav-count">{filteredFloods.length}</b>}</button>)}
-      <div className="sidebar-bottom"><div className="mini-health"><span className={`health-dot ${levelState}`}/><div><b>{statusCopy}</b><small>{compactNum(stations.length)} gauges online</small></div></div><button className="nav-item"><Settings2 size={18}/><span>Preferences</span></button><div className="data-credit">DATA FROM<br/><b>Environment Agency</b><br/>RainViewer · EUMETSAT</div></div>
+      <div className="sidebar-bottom"><div className="mini-health"><span className={`health-dot ${levelState}`}/><div><b>{statusCopy}</b><small>{compactNum(stations.length)} gauges online</small></div></div><button className="nav-item"><Settings2 size={18}/><span>Preferences</span></button><div className="data-credit">DATA FROM<br/><b>Environment Agency · SEPA</b>{providers.sepa==='unavailable'&&<small>Scottish readings delayed</small>}<br/>RainViewer · EUMETSAT<br/>Powered by Met Office data</div></div>
     </aside>
     <main className="workspace">
       <div className={`view-heading ${useMain === 'Map' ? 'map-heading' : ''}`}><div><div className="eyebrow">RIVER INTELLIGENCE <span>/</span> LIVE MONITORING</div><h1>{useMain === 'Map' ? 'UK overview' : useMain}</h1></div><div className="heading-actions"><span className="updated"><span className="live-pulse"/>Updated {ago(lastUpdate)}</span><button className="outline-button" onClick={requestRefresh}><Activity size={15}/> Refresh</button></div></div>
       {error && <div className="error-banner"><AlertTriangle size={16}/><span>{error}</span><button onClick={requestRefresh}>Retry</button></div>}
-      {useMain === 'Alerts' ? <AlertsView warnings={filteredFloods} available={providers.floodWarnings==='ok'} onSelect={focusWarning}/> : useMain === 'Stations' ? <StationView stations={visibleStations} measurements={measurements} onSelect={selectStation}/> : useMain === 'History' ? <section className="history-page panel"><div className="panel-heading"><div><span className="eyebrow">GAUGE HISTORY</span><h2>{selected?.label || 'Select a station'}</h2></div><span className="subtle">Today · Environment Agency</span></div><HistoryChart points={history} threshold={threshold} unit={selected?.levelMeasure?.unitName}/></section> : <>
+      {useMain === 'Alerts' ? <AlertsView warnings={filteredFloods} available={providers.floodWarnings==='ok'} onSelect={focusWarning}/> : useMain === 'Stations' ? <StationView stations={visibleStations} measurements={measurements} onSelect={selectStation}/> : useMain === 'History' ? <section className="history-page panel"><div className="panel-heading"><div><span className="eyebrow">GAUGE HISTORY</span><h2>{selected?.label || 'Select a station'}</h2></div><span className="subtle">Today · {selected?.provider || 'Environment Agency'}</span></div><HistoryChart points={history} threshold={threshold} unit={selected?.levelMeasure?.unitName}/></section> : <>
         <section className={`map-and-detail ${fullMap ? 'map-only' : ''}`}>
           <div className="map-card">
             <MapContainer center={[54.35,-3.3]} zoom={6} minZoom={5} maxZoom={15} zoomControl={false} scrollWheelZoom className={`uk-map map-base-${layer}`}>
@@ -385,13 +425,15 @@ function App() {
                 attribution='Weather radar by <a href="https://www.rainviewer.com/">RainViewer</a>'
               />)}
               {satellite && <WMSTileLayer url="https://view.eumetsat.int/geoserver/wms" layers="mtg_fd:rgb_geocolour" format="image/png" transparent version="1.3.0" opacity={satelliteOpacity} attribution='Satellite imagery &copy; <a href="https://www.eumetsat.int/">EUMETSAT</a>'/>}
+              <WeatherWarningLayer warnings={weatherWarnings} show={showWeatherWarnings}/>
               <FocusStation station={mapFocus}/><ResizeMap expanded={fullMap}/><ZoomControl position="topright"/>
-              {visibleStations.filter(s=>showGaugeMarkers||stationId(s)===stationId(selected||{})).map(s=>{const id=stationId(s), isSelected=id===stationId(selected||{}); return <CircleMarker key={id} center={[s.lat,s.long]} radius={isSelected?8:2.4} pathOptions={{color:isSelected?'#e7f6ff':'#55baff',weight:isSelected?2:1,fillColor:isSelected?'#32a8ff':'#268bd4',fillOpacity:isSelected?1:.5,opacity:.78}} eventHandlers={{click:()=>selectStation(s)}}/>})}
+              <GaugeMarkers stations={visibleStations} show={showGaugeMarkers} selectedId={stationId(selected||{})} onSelect={selectStation}/>
+
               {filteredFloods.filter(w=>Number.isFinite(w.lat)&&Number.isFinite(w.long)).flatMap(w=>{const id=w.floodAreaID||w['@id'];const primary=id===(warnings[0]?.floodAreaID||warnings[0]?.['@id']);const active=id===focusedWarningId;const prominent=primary||active;const tint=Number(w.severityLevel)<=2?'#ff515b':Number(w.severityLevel)===3?'#ffb442':'#ffc76a';return [<CircleMarker key={`warning-halo-${id}`} center={[w.lat,w.long]} radius={prominent?23:15} interactive={false} pathOptions={{color:tint,weight:0,fillColor:tint,fillOpacity:prominent ? 0.2 : 0.12,className:prominent?'alert-marker-halo-primary':'alert-marker-halo'}}/>,<CircleMarker key={`warning-${id}`} center={[w.lat,w.long]} radius={prominent?6.5:4.5} pathOptions={{color:'#ffe6d1',weight:1,fillColor:tint,fillOpacity:prominent ? 0.82 : 0.68,opacity:.95,className:prominent?'alert-marker-core-primary':'alert-marker-core'}} eventHandlers={{click:()=>focusWarning(w)}}><Tooltip direction="top">{w.severity} area: {w.description}</Tooltip></CircleMarker>]})}
             </MapContainer>
             <div className="map-topline"><div className="map-mode"><button className={layer==='dark'?'active':''} onClick={()=>setLayer('dark')}><Waves size={14}/> Rivers</button><button className={layer==='terrain'?'active':''} onClick={()=>setLayer('terrain')}>Terrain</button><button className={layer==='satellite'?'active':''} onClick={()=>setLayer('satellite')}>Satellite</button><button className={`radar-mode ${radar?'active':''}`} onClick={()=>setRadar(!radar)} disabled={providers.radar!=='ok'} title="Toggle rainfall radar"><CloudRain size={13}/> Rain</button></div><div className="map-top-actions"><button className="map-search-hint" onClick={()=>document.querySelector('.searchbox input')?.focus()}><Search size={14}/> Find a gauge</button><button className={`alert-cycle-toggle ${cycleAlerts?'active':''}`} role="switch" aria-checked={cycleAlerts} aria-label="Cycle through active alerts" title={filteredFloods.length ? 'Smoothly cycle through active flood alerts' : 'No active flood alerts'} disabled={!filteredFloods.length} onClick={()=>{const next=!cycleAlerts;setCycleAlerts(next);if(next&&!focusedWarningIdRef.current&&filteredFloods[0])focusWarning(filteredFloods[0]);}}><span className="cycle-switch"><i/></span><span className="cycle-label">Alerts</span></button></div></div>
-            <div className="map-layers-control"><button className={showLayers?'on':''} onClick={()=>setShowLayers(!showLayers)}><Layers2 size={16}/><span>Layers</span></button>{showLayers&&<div className="layer-popover"><div className="popover-title">MAP DETAIL</div><label className="layer-toggle"><span><MapIcon size={15}/> Show gauge markers <small>Up to 700 station markers</small></span><input type="checkbox" checked={showGaugeMarkers} onChange={e=>setShowGaugeMarkers(e.target.checked)}/></label><OpacityControl label="River network" value={riverOpacity} onChange={setRiverOpacity}/><div className="popover-title weather-title">WEATHER OVERLAYS</div><label className="layer-toggle"><span><CloudRain size={15}/> Rainfall radar <small>{providers.radar==='ok'?'RainViewer · native zoom 7':'Radar feed unavailable'}</small></span><input type="checkbox" disabled={providers.radar!=='ok'} checked={radar} onChange={e=>setRadar(e.target.checked)}/></label><OpacityControl label="Radar opacity" value={radarOpacity} onChange={setRadarOpacity} disabled={providers.radar!=='ok'}/><label className="layer-toggle"><span><Radio size={15}/> Satellite clouds <small>Meteosat · near-real-time</small></span><input type="checkbox" checked={satellite} onChange={e=>setSatellite(e.target.checked)}/></label><OpacityControl label="Satellite opacity" value={satelliteOpacity} onChange={setSatelliteOpacity}/><div className="popover-credit">Radar shows reflectivity, not calibrated rainfall amounts. Satellite imagery via EUMETSAT.</div></div>}</div>
-            <div className="map-legend">{showGaugeMarkers&&<span><i className="legend-blue"/> River gauges</span>}{rapidRise&&<span><i className="legend-rapid"/> Rising quickly</span>}<span><i className="legend-alert"/> Alert area point</span><span><i className="legend-ring"/> Selected station</span></div>
+            <div className="map-layers-control"><button className={showLayers?'on':''} onClick={()=>setShowLayers(!showLayers)}><Layers2 size={16}/><span>Layers</span></button>{showLayers&&<div className="layer-popover"><div className="popover-title">MAP DETAIL</div><label className="layer-toggle"><span><MapIcon size={15}/> Show gauge markers <small>England and Scotland gauges</small></span><input type="checkbox" checked={showGaugeMarkers} onChange={e=>setShowGaugeMarkers(e.target.checked)}/></label><OpacityControl label="River network" value={riverOpacity} onChange={setRiverOpacity}/><div className="popover-title weather-title">WEATHER OVERLAYS</div><label className="layer-toggle"><span><AlertTriangle size={15}/> Weather warnings <small>{weatherStatus==='ok'?`${weatherWarnings.length} ${weatherHasPolygons?'warning areas':'regional notices'} · Met Office`:weatherStatus==='unavailable'?'Warning feed unavailable':'Loading warnings…'}</small></span><input type="checkbox" checked={showWeatherWarnings} onChange={e=>setShowWeatherWarnings(e.target.checked)}/></label>{showWeatherWarnings&&<div className="popover-credit">{weatherStatus==='ok'?(weatherWarnings.length?(weatherHasPolygons?'Current and upcoming warnings. Outlines show Met Office warning areas. Click an area for validity and details.':'Current and upcoming warnings. Markers show affected regions, not precise boundaries.'):'No weather warnings in the Met Office feed.'):'Weather warning feed unavailable; coverage cannot be confirmed.'} <a href="https://weather.metoffice.gov.uk/warnings-and-advice/uk-warnings" target="_blank" rel="noreferrer">Met Office warnings ↗</a></div>}<label className="layer-toggle"><span><CloudRain size={15}/> Rainfall radar <small>{providers.radar==='ok'?'RainViewer · native zoom 7':'Radar feed unavailable'}</small></span><input type="checkbox" disabled={providers.radar!=='ok'} checked={radar} onChange={e=>setRadar(e.target.checked)}/></label><OpacityControl label="Radar opacity" value={radarOpacity} onChange={setRadarOpacity} disabled={providers.radar!=='ok'}/><label className="layer-toggle"><span><Radio size={15}/> Satellite clouds <small>Meteosat · near-real-time</small></span><input type="checkbox" checked={satellite} onChange={e=>setSatellite(e.target.checked)}/></label><OpacityControl label="Satellite opacity" value={satelliteOpacity} onChange={setSatelliteOpacity}/><div className="popover-credit">Radar shows reflectivity, not calibrated rainfall amounts. Satellite imagery via EUMETSAT.</div></div>}</div>
+            <div className="map-legend">{showWeatherWarnings&&<span><i style={{background:"#ffe052"}}/> Weather warnings · {weatherHasPolygons?'area outlines':'regional points'}</span>}{showGaugeMarkers&&<span><i className="legend-blue"/> River gauges</span>}{rapidRise&&<span><i className="legend-rapid"/> Rising quickly</span>}<span><i className="legend-alert"/> Alert area point</span><span><i className="legend-ring"/> Selected station</span></div>
             {radar&&rainFrames.length>0&&<div className="radar-timeline"><button onClick={()=>setPlaying(!playing)} aria-label={playing?'Pause radar':'Play radar'}>{playing?'Ⅱ':'▶'}</button><span>RADAR</span><input type="range" min="0" max={Math.max(0,rainFrames.length-1)} value={Math.max(0,rainIndex)} onChange={e=>{setPlaying(false);setRainIndex(Number(e.target.value))}}/><small>{frame?new Date(frame.time*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'—'}</small></div>}
             <button className="expand-map" title={fullMap?'Restore dashboard':'Expand map'} onClick={()=>setFullMap(!fullMap)}>{fullMap?<X size={16}/>:<Maximize2 size={16}/>}</button>
             <div className="map-foot">{showGaugeMarkers?`${visibleStations.length} GAUGES SHOWN`:"GAUGE LAYER OFF"} <span>·</span> {compactNum(stations.length)} ONLINE</div>
@@ -409,15 +451,16 @@ function App() {
             </div>
             <div className="metric-row"><Metric label="CURRENT LEVEL" value={currentReading?`${currentReading.value.toFixed(2)} m`:'—'} icon={<Waves size={20}/>} color="blue"/><Metric label="RATE OF CHANGE" value={delta==null?'—':`${delta>0?'+':''}${delta.toFixed(2)} m/h`} icon={delta==null?<Activity size={19}/>:delta>=0?<ArrowUpRight size={20}/>:<ArrowDownRight size={20}/>} color={delta>0?'red':'blue'}/><Metric label="TREND" value={riseLabel} icon={<Activity size={19}/>} color={delta>=.1?'red':delta>0?'amber':'blue'}/></div>
             <div className="threshold-row"><div><span>Last reading</span><b><Clock3 size={15}/>{currentReading?new Date(currentReading.dateTime).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'Waiting for reading'}</b><small>{ago(currentReading?.dateTime)}</small></div><div className="threshold-side"><span>Typical range high</span><b>{threshold!=null?`${threshold.toFixed(2)} m`:'Not published'}</b>{threshold!=null&&currentReading&&<small>{(threshold-currentReading.value).toFixed(2)} m {threshold>=currentReading.value?'below':'above'} typical high</small>}</div></div>
-            <div className={`insight-box ${levelState}`}><span className="insight-icon">{levelState==='healthy'?<Droplets size={17}/>:<AlertTriangle size={17}/>}</span><div className="insight-copy"><p>{activeWarning?alertPreview || 'The Environment Agency has issued an active flood alert for this area.':levelState==='elevated'?'This gauge is above its published typical range. Check official local flood warnings for current risk information.':`No matching official flood warning found for ${selected?.label || 'this gauge'}. River levels can change; readings are reported at the station’s published interval.`}</p>{activeWarningMessage.length>170&&<button className="alert-message-toggle" onClick={()=>setShowAlertMessage(true)}>Read full alert</button>}</div></div>
+            <div className={`insight-box ${levelState}`}><span className="insight-icon">{levelState==='healthy'?<Droplets size={17}/>:<AlertTriangle size={17}/>}</span><div className="insight-copy"><p>{selected?.provider === 'SEPA' ? <>Scottish flood alerts are not connected. <a href="https://beta.sepa.scot/flooding/" target="_blank" rel="noreferrer">Check SEPA flood warnings ↗</a></> : activeWarning?alertPreview || 'The Environment Agency has issued an active flood alert for this area.':levelState==='elevated'?'This gauge is above its published typical range. Check official local flood warnings for current risk information.':`No matching official flood warning found for ${selected?.label || 'this gauge'}. River levels can change; readings are reported at the station’s published interval.`}</p>{activeWarningMessage.length>170&&<button className="alert-message-toggle" onClick={()=>setShowAlertMessage(true)}>Read full alert</button>}</div></div>
+            <BriefingPanel briefing={briefing}/>
           </aside>}
         </section>
         {!fullMap&&<section className="bottom-grid">
-          <div className="chart-panel panel"><div className="panel-heading"><div><div className="chart-title"><span className="eyebrow">LIVE HYDROGRAPH</span><i/> <span className="small-context">{selected?.riverName || 'River level'} · {selected?.label || 'Gauge'}</span></div><h3>River level <small>{selected?.levelMeasure?.unitName ? `(${selected.levelMeasure.unitName})` : '(m)'}</small></h3></div><div className="chart-key"><span><i className="key-line"/>River level</span>{rainfall&&<span title={`Nearby gauge: ${rainfall.station}, ${rainfall.distanceKm} km away`}><i className="key-rain"/>Rainfall mm/h</span>}{threshold!=null&&<span><i className="key-dash"/>Typical range high</span>}<button title="History view" onClick={()=>setActiveNav('History')}><Maximize2 size={14}/></button></div></div><div className="chart-wrap"><HistoryChart points={history} threshold={threshold} unit={selected?.levelMeasure?.unitName} rainfall={rainfall}/></div><div className="chart-bottom-labels"><span>Today · Environment Agency readings{rainfall?` · Rain gauge ${rainfall.distanceKm} km away`:' · Rain gauge unavailable nearby'}</span><span>{history.length} level · {rainfall?.observations?.length || 0} rain</span></div></div>
+          <div className="chart-panel panel"><div className="panel-heading"><div><div className="chart-title"><span className="eyebrow">LIVE HYDROGRAPH</span><i/> <span className="small-context">{selected?.riverName || 'River level'} · {selected?.label || 'Gauge'}</span></div><h3>River level <small>{selected?.levelMeasure?.unitName ? `(${selected.levelMeasure.unitName})` : '(m)'}</small></h3></div><div className="chart-key"><span><i className="key-line"/>River level</span>{rainfall&&<span title={`Nearby gauge: ${rainfall.station}, ${rainfall.distanceKm} km away`}><i className="key-rain"/>Rainfall mm/h</span>}{threshold!=null&&<span><i className="key-dash"/>Typical range high</span>}<button title="History view" onClick={()=>setActiveNav('History')}><Maximize2 size={14}/></button></div></div><div className="chart-wrap"><HistoryChart compact points={history} threshold={threshold} unit={selected?.levelMeasure?.unitName} rainfall={rainfall}/></div><div className="chart-bottom-labels"><span>Today · {selected?.provider || 'Environment Agency'} readings{rainfall?` · Rain gauge ${rainfall.distanceKm} km away`:' · Rain gauge unavailable nearby'}</span><span>{detailStatus==='loading'?'Loading gauge history…':detailStatus==='unavailable'?'History refresh delayed':`${history.length} level · ${rainfall?.observations?.length || 0} rain`}</span></div></div>
           <div className="summary-stack"><SummaryCard icon={<AlertTriangle size={17}/>} label="Active flood warnings" value={providers.floodWarnings==='ok'?compactNum(filteredFloods.length):'—'} tone="red" note={providers.floodWarnings==='ok'?`${warningSeverityCounts[0]} severe · ${warningSeverityCounts[1]} flood warnings · ${warningSeverityCounts[2]} flood alerts`:'Alert feed unavailable'} graphic={<MiniBars values={warningSeverityCounts} tone="red" label="Current warnings by severity"/>} onClick={()=>setActiveNav('Alerts')}/><SummaryCard icon={<Database size={17}/>} label="Monitored gauges" value={compactNum(stations.length)} tone="blue" note="Recent readings · <1h / 1–6h / >6h" graphic={<MiniBars values={gaugeFreshnessCounts} tone="blue" label="Gauge reading freshness: less than one hour, one to six hours, over six hours"/>} onClick={()=>setActiveNav('Stations')}/><SummaryCard icon={<Waves size={18}/>} label="Selected river level" value={currentReading?`${currentReading.value.toFixed(2)} m`:'—'} tone="amber" note={selected?.label || 'Awaiting readings'} graphic={<MiniTrend values={history.map(p=>p.value)} tone="amber" label="Selected gauge level history"/>} onClick={()=>selected&&selectStation(selected)}/></div>
         </section>}
       </>}
-      <footer className="app-footer"><span>RiverWatch <b>·</b> Data from the Environment Agency real-time flood-monitoring API</span><span>For information only · Follow official flood guidance <a href="https://www.gov.uk/check-flooding" target="_blank" rel="noreferrer">Check for flooding ↗</a></span></footer>
+      <footer className="app-footer"><span>RiverWatch <b>·</b> River data © Environment Agency · © SEPA (OGL 3.0)</span><span>For information only · Follow official flood guidance <a href="https://www.gov.uk/check-flooding" target="_blank" rel="noreferrer">Check for flooding ↗</a></span></footer>
     </main>
     {showAlertMessage&&<div className="alert-modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)setShowAlertMessage(false)}}><section className="alert-modal" role="dialog" aria-modal="true" aria-labelledby="alert-modal-title"><header><div><span className="eyebrow">ENVIRONMENT AGENCY · OFFICIAL MESSAGE</span><h2 id="alert-modal-title">{focusedWarning?.description || focusedWarning?.floodArea?.riverOrSea || 'Flood alert'}</h2></div><button className="icon-button" aria-label="Close full flood alert" onClick={()=>setShowAlertMessage(false)}><X size={18}/></button></header><p>{activeWarningMessage}</p><footer><span>{focusedWarning?.severity || 'Official flood information'}</span><a href="https://www.gov.uk/check-flooding" target="_blank" rel="noreferrer">Check official guidance ↗</a></footer></section></div>}
     {loading&&<div className="loading-cover"><div className="loading-mark"><Waves size={28}/></div><b>Reading the rivers</b><span>Connecting to live UK gauge data…</span><div className="loading-track"><i/></div></div>}
@@ -429,8 +472,30 @@ function OpacityControl({label,value,onChange,disabled=false}){return <label cla
 function SummaryCard({icon,label,value,tone,note,graphic,onClick}){return <button className="summary-card panel" onClick={onClick}><span className={`summary-icon ${tone}`}>{icon}</span><span className="summary-copy"><small>{label}</small><b>{value}</b><em>{note}</em></span>{graphic}<ChevronRight size={16} className="summary-arrow"/></button>}
 function MiniBars({values,tone,label}){if(!values?.length)return null;const max=Math.max(1,...values);return <svg className={`summary-graphic ${tone}`} viewBox="0 0 74 30" role="img" aria-label={label}>{values.map((v,i)=>{const h=Math.max(2,24*v/max);return <rect key={i} x={i*23+5} y={27-h} width="12" height={h} rx="2"/>})}</svg>}
 function MiniTrend({values,tone,label}){const rows=values.filter(Number.isFinite).slice(-24);if(rows.length<2)return null;const lo=Math.min(...rows),hi=Math.max(...rows),span=Math.max(hi-lo,.01);const path=rows.map((v,i)=>`${i?'L':'M'} ${i*72/Math.max(rows.length-1,1)+1} ${26-(v-lo)/span*22}`).join(' ');return <svg className={`summary-graphic trend ${tone}`} viewBox="0 0 74 30" role="img" aria-label={label}><path d={path}/></svg>}
-function StationView({stations,measurements,onSelect}) {return <section className="list-panel panel"><div className="panel-heading"><div><span className="eyebrow">LIVE MONITORING NETWORK</span><h2>River gauges</h2></div><span className="subtle">Select a station to inspect its live readings</span></div><div className="station-table"><div className="table-head"><span>STATION</span><span>RIVER / CATCHMENT</span><span>LOCATION</span><span>LEVEL</span><span>LAST READING</span></div>{stations.slice(0,180).map(s=>{const r=measurements[stationId(s)];return <button className="station-row" key={stationId(s)} onClick={()=>onSelect(s)}><span><i className="table-live"/><b>{s.label}</b><small>{stationId(s)}</small></span><span>{s.riverName||s.catchmentName||'—'}</span><span>{s.town||'—'}</span><strong>{r?`${r.value.toFixed(2)} m`:'—'}</strong><span className="subtle">{ago(r?.dateTime)}</span></button>})}</div></section>}
-function AlertsView({warnings,onSelect}) {return <section className="list-panel panel"><div className="panel-heading"><div><span className="eyebrow">OFFICIAL ALERTS</span><h2>Flood warnings &amp; alerts</h2></div><span className="subtle">Environment Agency · updated by the source</span></div>{!warnings.length?<div className="empty-state"><div><Waves size={24}/></div><h3>No active flood warnings</h3><p>The Environment Agency currently reports no flood alerts or warnings. Gauge readings continue to update independently.</p></div>:<div className="alerts-grid">{warnings.map((w,i)=><article className="warning-card" key={w['@id']||i} role="button" tabIndex={0} onClick={()=>onSelect(w)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onSelect(w)}}}><div className="warning-top"><span className={`severity-pill ${w.severityLevel<=2?'critical':'elevated'}`}>{w.severity||'Flood alert'}</span><span>{ago(w.timeMessageChanged||w.timeRaised)}</span></div><h3>{w.description||w.floodArea?.riverOrSea||'Flood alert area'}</h3><p>{w.floodArea?.county||w.eaAreaName||''}</p><div className="warning-message">{w.message||'Follow the Environment Agency for local guidance.'}</div><a href="https://www.gov.uk/check-flooding" target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()}>Open official flood guidance <ChevronRight size={15}/></a></article>)}</div>}</section>}
+function StationView({stations,measurements,onSelect}) {return <section className="list-panel panel"><div className="panel-heading"><div><span className="eyebrow">LIVE MONITORING NETWORK</span><h2>River gauges</h2></div><span className="subtle">Select a station to inspect its live readings</span></div><div className="station-table"><div className="table-head"><span>STATION</span><span>RIVER / CATCHMENT</span><span>LOCATION</span><span>LEVEL</span><span>LAST READING</span></div>{stations.map(s=>{const r=measurements[stationId(s)];return <button className="station-row" key={stationId(s)} onClick={()=>onSelect(s)}><span><i className="table-live"/><b>{s.label}</b><small>{stationId(s)}</small></span><span>{s.riverName||s.catchmentName||'—'}</span><span>{s.town||'—'}</span><strong>{r?`${r.value.toFixed(2)} m`:'—'}</strong><span className="subtle">{ago(r?.dateTime)}</span></button>})}</div></section>}
+function AlertsView({warnings,onSelect}) {return <section className="list-panel panel"><div className="panel-heading"><div><span className="eyebrow">OFFICIAL ALERTS</span><h2>Flood warnings &amp; alerts</h2><p>Environment Agency alerts only. Scottish alerts are not connected. <a href="https://beta.sepa.scot/flooding/" target="_blank" rel="noreferrer">Check SEPA warnings ↗</a></p></div><span className="subtle">Environment Agency · updated by the source</span></div>{!warnings.length?<div className="empty-state"><div><Waves size={24}/></div><h3>No active flood warnings</h3><p>The Environment Agency currently reports no flood alerts or warnings. Gauge readings continue to update independently.</p></div>:<div className="alerts-grid">{warnings.map((w,i)=><article className="warning-card" key={w['@id']||i} role="button" tabIndex={0} onClick={()=>onSelect(w)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onSelect(w)}}}><div className="warning-top"><span className={`severity-pill ${w.severityLevel<=2?'critical':'elevated'}`}>{w.severity||'Flood alert'}</span><span>{ago(w.timeMessageChanged||w.timeRaised)}</span></div><h3>{w.description||w.floodArea?.riverOrSea||'Flood alert area'}</h3><p>{w.floodArea?.county||w.eaAreaName||''}</p><div className="warning-message">{w.message||'Follow the Environment Agency for local guidance.'}</div><a href="https://www.gov.uk/check-flooding" target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()}>Open official flood guidance <ChevronRight size={15}/></a></article>)}</div>}</section>}
 
 export default App;
 
+
+const GaugeMarkers = memo(function GaugeMarkers({stations,show,selectedId,onSelect}) {
+  return stations.filter(s=>show||stationId(s)===selectedId).map(s=>{
+    const id=stationId(s), active=id===selectedId;
+    return <CircleMarker key={id} center={[s.lat,s.long]} radius={active?8:2.4} pathOptions={{color:active?'#e7f6ff':'#55baff',weight:active?2:1,fillColor:active?'#32a8ff':'#268bd4',fillOpacity:active?1:.5,opacity:.78}} eventHandlers={{click:()=>onSelect(s)}}><Tooltip>{s.label} · {s.provider || 'Environment Agency'}</Tooltip></CircleMarker>;
+  });
+});
+
+const WeatherWarningLayer = memo(function WeatherWarningLayer({warnings,show}) {
+  return <>{show && warnings.map(warning => {
+                const colour = {red:'#ed4b55', amber:'#ffac32', yellow:'#ffe052'}[warning.level];
+                const content = <><Tooltip>{warning.title}</Tooltip><Popup><div className="weather-warning-popup"><strong>{warning.title}</strong><p>{warning.description}</p>{warning.validFrom&&<p>{Date.parse(warning.validFrom)>Date.now()?'Upcoming':'In force'} · {new Date(warning.validFrom).toLocaleString('en-GB')} – {new Date(warning.validTo).toLocaleString('en-GB')}</p>}<p>{warning.region}</p>{warning.details&&<p>{warning.details}</p>}{!warning.geometry&&<small>Regional reference point, not a warning boundary.</small>}<p><a href={warning.link} target="_blank" rel="noreferrer">Full warning · Met Office ↗</a></p></div></Popup></>;
+                return warning.geometry ? <GeoJSON key={`${warning.id}-${warning.revision}-${warning.validFrom}`} data={{type:'Feature',properties:{},geometry:warning.geometry}} style={{color:colour,weight:2.5,fillColor:colour,fillOpacity:.12,opacity:.95}} attribution='Weather warnings © Crown copyright, Met Office'>{content}</GeoJSON> : <CircleMarker key={warning.id} center={[warning.lat,warning.long]} radius={10} pathOptions={{color:colour,fillColor:colour,fillOpacity:.7,weight:2}}>{content}</CircleMarker>;
+              })}</>;
+});
+
+const BriefingPanel = memo(function BriefingPanel({briefing}) {
+  return <details className="briefing-panel" open>
+    <summary><span><Activity size={13}/> Latest briefing</span><small>{briefing?.mode==='ai'?'AI selected':'Live facts'}</small></summary>
+    {briefing?.highlights?.length ? <><ul>{briefing.highlights.map(fact=><li key={fact.id}><a href={fact.url} target="_blank" rel="noreferrer">{fact.text}</a></li>)}</ul><div className="briefing-meta">UK overview · Data {ago(briefing.dataAsOf)}{briefing.mode==='ai'&&` · Selected ${ago(briefing.generatedAt)}`}<br/>Scottish flood alerts are not connected. <a href="https://beta.sepa.scot/flooding/" target="_blank" rel="noreferrer">Check SEPA ↗</a></div></> : <p className="briefing-meta">Waiting for a recent river snapshot. Official warning layers update independently.</p>}
+  </details>;
+});

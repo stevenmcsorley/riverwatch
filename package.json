@@ -8,9 +8,11 @@
     "dev": "concurrently -k \"node server/server.mjs\" \"vite --host 0.0.0.0\"",
     "build": "vite build",
     "start": "node server/server.mjs",
-    "preview": "node server/server.mjs"
+    "preview": "node server/server.mjs",
+    "test": "node --test server/*.test.mjs shared/*.test.mjs"
   },
   "dependencies": {
+    "fast-xml-parser": "^5.11.2",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.561.0",
     "react": "^19.3.1",

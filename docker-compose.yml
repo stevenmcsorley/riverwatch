@@ -1,0 +1,36 @@
+services:
+  web:
+    image: ghcr.io/stevenmcsorley/riverwatch-web:${RIVERWATCH_TAG:-latest}
+    build: .
+    container_name: riverwatch-web
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+    ports:
+      - "127.0.0.1:8232:3001"
+    volumes:
+      - ./.cache:/app/.cache
+    networks:
+      - tunnel
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  tunnel:
+    external: true
+    name: halfagiraf_web

@@ -1,0 +1,32 @@
+name: Deploy RiverWatch
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rollback_tag:
+        description: "Previous image SHA to restore (blank builds current source)"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-riverwatch
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+      packages: write
+    uses: stevenmcsorley/pi-ci/.github/workflows/pi-deploy-ghcr.yml@0fae6d985f242bbbe3cead9e3737099ba016d89e
+    with:
+      app_dir: riverwatch
+      compose_args: ""
+      services: web
+      tag_var: RIVERWATCH_TAG
+      health_url: http://127.0.0.1:8232/api/health
+      health_match: '"status":"ok"'
+      app_label: RiverWatch
+      rollback_tag: ${{ github.event.inputs.rollback_tag || '' }}
+      rsync_excludes: ".git .github .env .env.* .cache node_modules dist docs"

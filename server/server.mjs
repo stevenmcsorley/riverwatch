@@ -1,24 +1,48 @@
 import http from 'node:http';
+import { BriefingService } from './briefing.mjs';
+import { fetchWeatherWarnings } from './weather-warnings.mjs';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
+import { fetchSepaStations, fetchSepaHistory } from './sepa.mjs';
+import { createCache, BoundedMap } from '../shared/cache.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+try { process.loadEnvFile(path.join(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const port = Number(process.env.PORT || 3001);
 const EA = 'https://environment.data.gov.uk/flood-monitoring';
 const REFRESH_MS = 5 * 60 * 1000;
+const briefing = new BriefingService({ key: process.env.OPENROUTER_API_KEY, model: process.env.OPENROUTER_MODEL || undefined, statePath: path.join(root, '.cache', 'briefing.json') });
 let snapshot = null;
+async function updateBriefing() {
+  if (!snapshot) return;
+  let warnings;
+  try { warnings = await weatherFeed(); } catch { warnings = null; }
+  await briefing.update({ ...snapshot, weatherWarnings: warnings || [], providers: { ...snapshot.providers, weatherWarnings: warnings ? 'ok' : 'unavailable' } });
+}
+let weatherCache = null;
+let weatherPending = null;
+function weatherFeed() {
+  if (weatherCache && weatherCache.expires > Date.now()) return Promise.resolve(weatherCache.data);
+  if (!weatherPending) weatherPending = fetchWeatherWarnings().then(data => { weatherCache = { data, expires: Date.now() + 60 * 1000 }; return data; }).finally(() => { weatherPending = null; });
+  return weatherPending;
+}
 let pendingRefresh = null;
 let rainfallStations = [];
-const riverCache = new Map();
-const alertShapeCache = new Map();
-const gaugeDetailCache = new Map();
+let sepaStations = [];
+const riverCache = new BoundedMap(40);
+const alertShapeCache = new BoundedMap(80);
+const gaugeDetailCache = new BoundedMap(120);
 
+const upstreamCache = createCache({ maxEntries: 180 });
 async function json(url) {
-  const response = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(25000) });
-  if (!response.ok) throw new Error(`${response.status} from ${new URL(url).host}`);
-  return response.json();
+  const metadata = url.includes('/id/stations?') || url.includes('request=getTimeseriesList');
+  return upstreamCache.get(url, metadata ? 60 * 60 * 1000 : 60 * 1000, async () => {
+    const response = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`${response.status} from ${new URL(url).host}`);
+    return response.json();
+  });
 }
 const idFor = s => String(s.stationReference || s.notation || s['@id']?.split('/').pop() || '');
 const measureFor = m => m?.['@id'] || '';
@@ -40,13 +64,17 @@ async function refreshFeeds() {
   if (pendingRefresh) return pendingRefresh;
   pendingRefresh = (async () => {
     let floodWarningsAvailable = true;
-    const [stationData, readingData, floodData, radarData, rainfallStationData, rainfallReadingData] = await Promise.all([
+    let sepaAvailable = true;
+    let weatherWarningsAvailable = true;
+    const [stationData, readingData, floodData, radarData, rainfallStationData, rainfallReadingData, scottishStations, weatherWarnings] = await Promise.all([
       json(`${EA}/id/stations?parameter=level&_limit=2500`),
       json(`${EA}/data/readings?latest&parameter=level&_limit=2500`),
       json(`${EA}/id/floods`).catch(() => { floodWarningsAvailable = false; return { items: [] }; }),
       json('https://api.rainviewer.com/public/weather-maps.json').catch(() => null),
       json(`${EA}/id/stations?parameter=rainfall&_limit=1500`).catch(() => null),
       json(`${EA}/data/readings?latest&parameter=rainfall&_limit=1500`).catch(() => null),
+      fetchSepaStations(json).catch(() => { sepaAvailable = false; return sepaStations; }),
+      weatherFeed().catch(() => { weatherWarningsAvailable = false; return []; }),
     ]);
     const readingsByMeasure = new Map((readingData.items || []).map(r => [r.measure, r]));
     const stationRows = (stationData.items || []).filter(s => Number.isFinite(s.lat) && Number.isFinite(s.long)).map(s => {
@@ -63,7 +91,8 @@ async function refreshFeeds() {
     }).filter(s => s.levelMeasure);
     const uniqueStations = new Map();
     for (const s of stationRows) if (!uniqueStations.has(s.stationReference) || (!uniqueStations.get(s.stationReference).reading && s.reading)) uniqueStations.set(s.stationReference, s);
-    const stations = [...uniqueStations.values()];
+    sepaStations = scottishStations;
+    const stations = [...uniqueStations.values(), ...scottishStations];
     const rainReadingsByMeasure = new Map((rainfallReadingData?.items || []).map(r => [r.measure, r]));
     rainfallStations = (rainfallStationData?.items || []).filter(s => Number.isFinite(s.lat) && Number.isFinite(s.long)).flatMap(s => {
       const m = (s.measures || []).find(x => x.parameter === 'rainfall');
@@ -89,10 +118,11 @@ async function refreshFeeds() {
     decorated.sort((a,b) => Number(a.severityLevel)-Number(b.severityLevel) || new Date(b.timeRaised || 0)-new Date(a.timeRaised || 0));
     snapshot = {
       type: 'snapshot', generatedAt: new Date().toISOString(), stations,
-      warnings: decorated, radarFrames: radarData?.radar?.past || [],
-      providers: { environmentAgency: 'ok', floodWarnings: floodWarningsAvailable ? 'ok' : 'unavailable', radar: radarData ? 'ok' : 'unavailable', rainfall: rainfallStationData && rainfallReadingData ? 'ok' : 'unavailable' },
+      weatherWarnings, warnings: decorated, radarFrames: radarData?.radar?.past || [],
+      providers: { weatherWarnings: weatherWarningsAvailable ? 'ok' : 'unavailable', sepa: sepaAvailable ? 'ok' : 'unavailable', scottishFloodWarnings: 'unavailable', environmentAgency: 'ok', floodWarnings: floodWarningsAvailable ? 'ok' : 'unavailable', radar: radarData ? 'ok' : 'unavailable', rainfall: rainfallStationData && rainfallReadingData ? 'ok' : 'unavailable' },
     };
     broadcast(snapshot);
+    void updateBriefing();
     return snapshot;
   })().catch(error => {
     broadcast({ type: 'feed_error', message: `Live feed update failed: ${error.message}`, generatedAt: new Date().toISOString() });
@@ -127,6 +157,11 @@ async function sendJson(res, data, status = 200) {
 const mime = { '.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.ico':'image/x-icon' };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname === '/api/briefing') return sendJson(res, briefing.current());
+  if (url.pathname === '/api/weather-warnings') {
+    try { return sendJson(res, { warnings: await weatherFeed(), status: 'ok' }); }
+    catch { return sendJson(res, { warnings: [], status: 'unavailable' }, 502); }
+  }
   if (url.pathname === '/api/health') return sendJson(res, { status: 'ok', websocket: '/ws', updatedAt: snapshot?.generatedAt || null });
   if (url.pathname.startsWith('/api/station/')) {
     const id = decodeURIComponent(url.pathname.slice('/api/station/'.length));
@@ -137,6 +172,11 @@ const server = http.createServer(async (req, res) => {
     const cached = gaugeDetailCache.get(id);
     if (cached && cached.expires > Date.now()) return sendJson(res, cached.data);
     try {
+      if (station.provider === 'SEPA') {
+        const data = { stationId: id, history: await fetchSepaHistory(json, station.levelMeasure.tsId), typicalRangeHigh: null, rainfall: null };
+        gaugeDetailCache.set(id, { data, expires: Date.now() + 60 * 1000 });
+        return sendJson(res, data);
+      }
       const [history, scale] = await Promise.all([
         json(`${station.levelMeasure['@id']}/readings?today&_sorted`),
         station.stageScale ? json(station.stageScale) : Promise.resolve(null),
@@ -162,7 +202,7 @@ const server = http.createServer(async (req, res) => {
         } catch { /* Rainfall is an optional nearby feed; gauge history remains useful without it. */ }
       }
       const data = { stationId: id, history: items, typicalRangeHigh: Number.isFinite(typicalRangeHigh) ? typicalRangeHigh : null, rainfall };
-      gaugeDetailCache.set(id, { data, expires: Date.now() + 5 * 60 * 1000 });
+      gaugeDetailCache.set(id, { data, expires: Date.now() + 60 * 1000 });
       return sendJson(res, data);
     } catch (error) { return sendJson(res, { error: `Could not read gauge history: ${error.message}` }, 502); }
   }
@@ -203,7 +243,8 @@ const server = http.createServer(async (req, res) => {
   catch { file = path.join(dist, 'index.html'); }
   try {
     const bytes = await readFile(file);
-    res.writeHead(200, { 'content-type': mime[path.extname(file)] || 'application/octet-stream', 'content-length': bytes.length }); res.end(bytes);
+    const immutable = path.dirname(file) === path.join(dist, 'assets') && /-[\w-]{8,}\.(js|css)$/.test(path.basename(file));
+    res.writeHead(200, { 'content-type': mime[path.extname(file)] || 'application/octet-stream', 'content-length': bytes.length, 'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache', 'x-content-type-options': 'nosniff' }); res.end(bytes);
   } catch { res.writeHead(404); res.end('Build the app first with npm run build.'); }
 });
 
@@ -215,4 +256,6 @@ server.listen(port, '0.0.0.0', () => console.log(`RiverWatch data/WebSocket serv
 refreshFeeds().catch(() => {});
 const poller = setInterval(() => refreshFeeds().catch(() => {}), REFRESH_MS);
 poller.unref();
-for (const signal of ['SIGINT','SIGTERM']) process.on(signal, () => { clearInterval(poller); wss.close(); server.close(() => process.exit(0)); });
+const briefingPoller = setInterval(() => { void updateBriefing(); }, 60_000);
+briefingPoller.unref();
+for (const signal of ['SIGINT','SIGTERM']) process.on(signal, () => { clearInterval(poller); clearInterval(briefingPoller); wss.close(); server.close(() => process.exit(0)); });

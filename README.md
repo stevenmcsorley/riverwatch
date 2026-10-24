@@ -1,12 +1,26 @@
 # RiverWatch
 
-RiverWatch is a visual UK river monitoring dashboard. Its first dashboard brings together live Environment Agency gauge readings and flood alerts with weather radar and Meteosat satellite imagery.
+RiverWatch is a visual river monitoring dashboard for England and Scotland. It brings together Environment Agency and SEPA gauge readings, Environment Agency flood alerts, weather radar and Meteosat satellite imagery.
+
+Scottish gauges are searchable by station name or “Scotland” and include today's level history from [SEPA's Time Series Data Service](https://timeseriesdoc.sepa.org.uk/). Scottish data © SEPA, licensed under the Open Government Licence 3.0. SEPA refreshes every five minutes; each reading retains its original observation time, which may be older. If SEPA is unavailable, the last fetched Scottish readings remain visible with a delayed-feed label. Scottish rainfall and typical-range thresholds are not connected.
+
+Scottish flood alerts are not connected: SEPA's Floodline API requires requesting access. Use [SEPA's official flood warnings](https://beta.sepa.scot/flooding/). The app labels this gap when viewing Scottish gauges and on the Alerts page.
+
+Enable **Layers → Weather warnings** to show Met Office warning polygons with yellow, amber and red outlines and shading. Click an area for current/upcoming validity, affected regions and details. Configure `MET_OFFICE_API_KEY` in the server's `.env` (automatically loaded, ignored by Git) to use the NSWWS v1.1 API. Warning data refreshes independently every minute. The key stays on the server. Without a key, the public RSS fallback uses explicitly labelled regional points. Failed authenticated requests report unavailable coverage rather than substituting approximate boundaries. Weather warnings © Crown copyright, Met Office. Requires Node.js 22 or later.
+
+The separate `MET_OFFICE_MAP_API_KEY` is reserved for Met Office forecast map images. This service requires a configured Weather DataHub map-image order; a key alone does not provide images. It supplies model forecasts rather than observed rainfall radar. RiverWatch currently uses RainViewer for radar; forecast map images are not yet displayed.
+
+The **Latest briefing** panel runs automatically without a chat box. Set `OPENROUTER_API_KEY` in `.env`; the default model is `google/gemma-4-26b-a4b-it:free`. `OPENROUTER_MODEL` can select another explicitly `:free` model or `openrouter/free`; paid models are rejected and prompt, completion and request price limits are zero. Only compact public river/weather facts go to OpenRouter. The model chooses up to three known fact IDs; the app validates those IDs and displays its own verified wording and source links. AI does not predict flooding or write safety advice. The panel labels AI selections separately from the rule-based live-facts fallback.
+
+One server-wide AI attempt is allowed per 30 minutes, with a hard cap of 24 attempts per UTC day, including failures. Attempts and successful selections persist in the ignored `.cache/briefing.json` so restarting does not reset the allowance. No additional requests are triggered by visitors, page reloads or gauge selection. Calls require a meaningful change in warning identity/status/version, rising-level signals or coarse freshness counts. Changed facts invalidate the AI selection immediately; fresh deterministic highlights remain available during cooldowns or provider failures. AI selections expire after an hour and briefings stop displaying facts if the river snapshot is more than 15 minutes old. Official warning layers update independently. This local allowance is designed for a single Node server instance; multiple replicas would need shared allowance storage. Free-provider availability and account limits may cause the app to use live facts. `npm test` includes offline tests for these safeguards.
+
+Caching is in memory and bounded: concurrent upstream and browser requests share a fetch, live upstream responses and gauge details expire after one minute, station metadata after one hour, river geometry after six hours and flood-area geometry after one hour. The selected gauge history refreshes every minute; the full gauge network still refreshes every five minutes. Weather warnings refresh independently every minute. Failed requests are not cached. Cache reuse preserves original observation times; it never makes an old reading appear newly observed. Client and server live caches can together add up to approximately two minutes of delay to selected gauge history. Run regression checks with `node --test server/*.test.mjs shared/*.test.mjs`.
 
 ![Animated RiverWatch dashboard showing a central England flood alert with rising river levels and radar](docs/screenshots/riverwatch-demo.gif)
 
 ## Run it
 
-Requirements: Node.js 20.19+ or 22.12+ and npm.
+Requirements: Node.js 22.12+ and npm.
 
 ```bash
 cd riverwatch
@@ -27,7 +41,9 @@ npm start
 
 ## Hosting
 
-The complete live application cannot run on GitHub Pages alone. Pages serves static files, while RiverWatch also needs the Node service in `server/server.mjs` to fetch and cache public data, provide gauge and river geometry endpoints, and stream dashboard updates. For a public deployment, host the frontend on Pages and the Node service on a separate host that supports persistent WebSocket connections, then configure the frontend to connect to that service. That remote-service configuration is not included yet; the supported setup today is running the app with `npm run dev` or `npm start` on a machine that can run Node.js.
+The frontend and Node service run together, including `/api` and the `/ws` live connection. Static-only hosts cannot run the complete application. The production image builds and tests the source, then runs as an unprivileged user with production dependencies. Runtime credentials are supplied through the ignored `.env` file; `.cache` preserves the AI allowance across restarts. Hashed frontend assets can be cached for a year while HTML revalidates and API responses remain uncached by browsers.
+
+Pushes to `main` trigger the deployment workflow, which builds an immutable image tagged with the commit SHA, archives it in GHCR, starts the release and checks health. To restore a previous release, dispatch **Deploy RiverWatch** with its SHA in `rollback_tag`. Deployment state and credentials are preserved separately from releases.
 
 ## Demo
 
@@ -52,7 +68,7 @@ The map is designed as the first module of a broader public-data alert hub. Addi
 - Satellite: [EUMETSAT EUMETView Web Map Service](https://view.eumetsat.int/), using the Meteosat Geo Colour RGB layer. The map also offers Esri satellite imagery as a basemap.
 - Map tiles: Esri imagery/dark basemap and OpenTopoMap terrain. Provider credits are displayed on the map.
 
-The browser keeps a WebSocket open to the local Node service. That service refreshes the upstream HTTP feeds every five minutes and pushes snapshots over the socket; the browser does not poll for dashboard data or reload the page. River history and selected-river geometry are requested once when selection changes. Public upstream services do not provide a WebSocket feed, so the server-side fetch cadence follows their published update rates.
+The browser keeps a WebSocket open to the Node service. It refreshes the full gauge network every five minutes and pushes snapshots over the socket. Selected gauge history and weather warnings refresh independently every minute. River geometry is fetched on selection and cached. Briefing clients read the shared result without triggering AI calls.
 
 RiverWatch is an informational viewer, not a flood warning service or a safety-critical system. Map alert dots mark Environment Agency flood-area coordinates; they are area reference points, not the boundary of flooded land. A gauge being below its typical-range high does not mean there is no local flood risk. Warning areas may not map one-to-one to a river gauge. Always follow the [official UK flood guidance](https://www.gov.uk/check-flooding) and local emergency advice.
 
