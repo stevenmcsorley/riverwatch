@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createRadarFeed } from './radar.mjs';
 import { BriefingService } from './briefing.mjs';
 import { fetchWeatherWarnings } from './weather-warnings.mjs';
 import { readFile, stat } from 'node:fs/promises';
@@ -14,6 +15,7 @@ const port = Number(process.env.PORT || 3001);
 const EA = 'https://environment.data.gov.uk/flood-monitoring';
 const REFRESH_MS = 5 * 60 * 1000;
 const briefing = new BriefingService({ key: process.env.OPENROUTER_API_KEY, model: process.env.OPENROUTER_MODEL || undefined, statePath: path.join(root, '.cache', 'briefing.json') });
+const radarFeed = createRadarFeed();
 let snapshot = null;
 async function updateBriefing() {
   if (!snapshot) return;
@@ -66,11 +68,10 @@ async function refreshFeeds() {
     let floodWarningsAvailable = true;
     let sepaAvailable = true;
     let weatherWarningsAvailable = true;
-    const [stationData, readingData, floodData, radarData, rainfallStationData, rainfallReadingData, scottishStations, weatherWarnings] = await Promise.all([
+    const [stationData, readingData, floodData, rainfallStationData, rainfallReadingData, scottishStations, weatherWarnings] = await Promise.all([
       json(`${EA}/id/stations?parameter=level&_limit=2500`),
       json(`${EA}/data/readings?latest&parameter=level&_limit=2500`),
       json(`${EA}/id/floods`).catch(() => { floodWarningsAvailable = false; return { items: [] }; }),
-      json('https://api.rainviewer.com/public/weather-maps.json').catch(() => null),
       json(`${EA}/id/stations?parameter=rainfall&_limit=1500`).catch(() => null),
       json(`${EA}/data/readings?latest&parameter=rainfall&_limit=1500`).catch(() => null),
       fetchSepaStations(json).catch(() => { sepaAvailable = false; return sepaStations; }),
@@ -118,8 +119,8 @@ async function refreshFeeds() {
     decorated.sort((a,b) => Number(a.severityLevel)-Number(b.severityLevel) || new Date(b.timeRaised || 0)-new Date(a.timeRaised || 0));
     snapshot = {
       type: 'snapshot', generatedAt: new Date().toISOString(), stations,
-      weatherWarnings, warnings: decorated, radarFrames: radarData?.radar?.past || [],
-      providers: { weatherWarnings: weatherWarningsAvailable ? 'ok' : 'unavailable', sepa: sepaAvailable ? 'ok' : 'unavailable', scottishFloodWarnings: 'unavailable', environmentAgency: 'ok', floodWarnings: floodWarningsAvailable ? 'ok' : 'unavailable', radar: radarData ? 'ok' : 'unavailable', rainfall: rainfallStationData && rainfallReadingData ? 'ok' : 'unavailable' },
+      weatherWarnings, warnings: decorated,
+      providers: { weatherWarnings: weatherWarningsAvailable ? 'ok' : 'unavailable', sepa: sepaAvailable ? 'ok' : 'unavailable', scottishFloodWarnings: 'unavailable', environmentAgency: 'ok', floodWarnings: floodWarningsAvailable ? 'ok' : 'unavailable', rainfall: rainfallStationData && rainfallReadingData ? 'ok' : 'unavailable' },
     };
     broadcast(snapshot);
     void updateBriefing();
@@ -157,6 +158,10 @@ async function sendJson(res, data, status = 200) {
 const mime = { '.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.ico':'image/x-icon' };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname === '/api/radar') {
+    try { return sendJson(res, { ...await radarFeed(), status: 'ok' }); }
+    catch { return sendJson(res, { frames: [], status: 'unavailable' }, 502); }
+  }
   if (url.pathname === '/api/briefing') return sendJson(res, briefing.current());
   if (url.pathname === '/api/weather-warnings') {
     try { return sendJson(res, { warnings: await weatherFeed(), status: 'ok' }); }
@@ -253,6 +258,7 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
 });
 server.listen(port, '0.0.0.0', () => console.log(`RiverWatch data/WebSocket server listening on http://localhost:${server.address().port}`));
+void radarFeed().catch(() => {});
 refreshFeeds().catch(() => {});
 const poller = setInterval(() => refreshFeeds().catch(() => {}), REFRESH_MS);
 poller.unref();
