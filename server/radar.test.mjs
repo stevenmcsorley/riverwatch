@@ -1,10 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
 import { createRadarFeed, normalizeRadar } from './radar.mjs';
 import { RadarPlayback } from '../src/radar-playback.mjs';
 
 const frames = Array.from({length:13},(_,i)=>({path:`/v2/radar/frame${i}`,time:1000+i*600}));
 const payload = {host:'https://tilecache.rainviewer.com',radar:{past:frames}};
+
+test('default crossfade timers retain the browser global receiver on play, cancellation and destroy',async()=>{
+  const source=(await readFile(new URL('../src/radar-playback.mjs',import.meta.url),'utf8')).replace('export class RadarPlayback','class RadarPlayback');
+  const context=vm.createContext({});
+  const result=vm.runInContext(`
+    'use strict';
+    let scheduled=0, cancelled=0;
+    globalThis.setTimeout=function(){if(this!==globalThis)throw new TypeError('Illegal invocation');return ++scheduled};
+    globalThis.clearTimeout=function(){if(this!==globalThis)throw new TypeError('Illegal invocation');cancelled++};
+    ${source}
+    const handlers=[];
+    const player=new RadarPlayback((_url,events)=>{handlers.push(events);return {add(){},setOpacity(){},remove(){}}},()=>{});
+    const frames=[{path:'/v2/radar/a'},{path:'/v2/radar/b'},{path:'/v2/radar/c'}];
+    const update=index=>player.update({frames,index,playing:true,opacity:.72,host:'https://tilecache.rainviewer.com'});
+    update(0);handlers[0].load();handlers[1].load();update(1);
+    handlers[2].load();update(2);player.destroy();
+    ({scheduled,cancelled});
+  `,context);
+  assert.equal(result.scheduled,2);assert.equal(result.cancelled,2);
+});
 test('radar manifest accepts hashed paths, validates host and rejects empty feeds',()=>{
   assert.equal(normalizeRadar(payload).frames.length,13);
   assert.throws(()=>normalizeRadar({...payload,host:'https://example.com'}));

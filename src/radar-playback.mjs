@@ -1,7 +1,13 @@
 // Load only the visible grid initially, then buffer the next playback frame.
 // Keep one outgoing grid through the CSS fade so transitions cannot flash.
 export class RadarPlayback {
-  constructor(makeLayer, onState, { setTimer = setTimeout, clearTimer = clearTimeout, fadeMs = 450 } = {}) {
+  constructor(makeLayer, onState, {
+    // Browser timer methods require their global receiver, even when the
+    // scheduler is stored on this controller for deterministic testing.
+    setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
+    clearTimer = handle => globalThis.clearTimeout(handle),
+    fadeMs = 450,
+  } = {}) {
     this.makeLayer = makeLayer; this.onState = onState; this.layers = new Map();
     this.displayed = null; this.target = null; this.stateKey = '';
     this.fading = null; this.fadeTimer = null;
