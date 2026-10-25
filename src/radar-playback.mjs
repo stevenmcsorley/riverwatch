@@ -1,9 +1,11 @@
-// Keep the current image visible until its replacement has loaded. At most two
-// tile grids exist: visible + requested, or visible + the next playback frame.
+// Load only the visible grid initially, then buffer the next playback frame.
+// Keep one outgoing grid through the CSS fade so transitions cannot flash.
 export class RadarPlayback {
-  constructor(makeLayer, onState) {
+  constructor(makeLayer, onState, { setTimer = setTimeout, clearTimer = clearTimeout, fadeMs = 450 } = {}) {
     this.makeLayer = makeLayer; this.onState = onState; this.layers = new Map();
     this.displayed = null; this.target = null; this.stateKey = '';
+    this.fading = null; this.fadeTimer = null;
+    this.setTimer = setTimer; this.clearTimer = clearTimer; this.fadeMs = fadeMs;
   }
   update({ frames, index, opacity, playing, host }) {
     this.frames = frames; this.index = Math.max(0, Math.min(index, frames.length - 1));
@@ -11,7 +13,7 @@ export class RadarPlayback {
     this.target = frames[this.index]?.path;
     if (!this.target) return;
     const next = playing && this.layers.get(this.target)?.loaded && !this.layers.get(this.target)?.error ? frames[(this.index + 1) % frames.length]?.path : null;
-    this.trim(new Set([this.displayed, this.target, next]));
+    this.trim(new Set([this.displayed, this.target, this.fading, next]));
     const record = this.ensure(frames[this.index]);
     if (record.loaded && !record.error) this.show(this.target);
     else this.report(record.error ? 'error' : 'loading');
@@ -44,16 +46,39 @@ export class RadarPlayback {
     record.layer.add();
     return record;
   }
-  show(path) { this.displayed = path; this.report('ready'); }
+  show(path) {
+    if (path !== this.displayed) {
+      if (this.fadeTimer !== null) this.clearTimer(this.fadeTimer);
+      if (this.fading && this.fading !== path) {
+        this.layers.get(this.fading)?.layer.remove();
+        this.layers.delete(this.fading);
+      }
+      this.fading = this.displayed;
+      this.displayed = path;
+      if (this.fading) {
+        const outgoing = this.fading;
+        this.fadeTimer = this.setTimer(() => {
+          this.fadeTimer = null;
+          if (this.fading === outgoing) { this.fading = null; this.reconcile(); }
+        }, this.fadeMs);
+      }
+    }
+    this.report('ready');
+  }
   reconcile() {
     const target = this.layers.get(this.target);
     const next = this.playing && target?.loaded && !target.error && this.frames.length > 1 ? this.frames[(this.index + 1) % this.frames.length] : null;
-    this.trim(new Set([this.displayed, this.target, next?.path]));
+    this.trim(new Set([this.displayed, this.target, this.fading, next?.path]));
     if (next) this.ensure(next);
     for (const [path, record] of this.layers) record.layer.setOpacity(path === this.displayed || (!this.displayed && path === this.target) ? this.opacity : 0);
   }
   trim(keep) {
     for (const [path, record] of this.layers) if (!keep.has(path)) { record.layer.remove(); this.layers.delete(path); }
   }
-  destroy() { for (const record of this.layers.values()) record.layer.remove(); this.layers.clear(); }
+  destroy() {
+    if (this.fadeTimer !== null) this.clearTimer(this.fadeTimer);
+    this.fadeTimer = null; this.fading = null;
+    for (const record of this.layers.values()) record.layer.remove();
+    this.layers.clear();
+  }
 }

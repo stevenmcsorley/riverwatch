@@ -19,13 +19,14 @@ test('radar requests share the independent cache and errors are retryable',async
 });
 
 function setup() {
-  const created=[], states=[];
+  const created=[], states=[], timers=new Map();let timerId=0;
   const player=new RadarPlayback((url,events)=>{
     const layer={url,events,opacity:0,removed:false,add(){},setOpacity(n){this.opacity=n},remove(){this.removed=true}};
     created.push(layer);return layer;
-  },state=>states.push(state));
+  },state=>states.push(state),{setTimer:(fn,ms)=>{timers.set(++timerId,{fn,ms});return timerId},clearTimer:id=>timers.delete(id)});
   const update=(index,playing=false,opacity=.72)=>player.update({frames,index,playing,opacity,host:payload.host});
-  return {player,created,states,update};
+  const finishFade=()=>{for(const [id,{fn}] of [...timers]){timers.delete(id);fn()}};
+  return {player,created,states,update,timers,finishFade};
 }
 test('paused startup downloads only the latest grid, not thirteen invisible frames',()=>{
   const {player,created,update}=setup();update(12);
@@ -33,13 +34,16 @@ test('paused startup downloads only the latest grid, not thirteen invisible fram
   assert.equal(created[0].opacity,.72);created[0].events.load();
   assert.equal(player.displayed,frames[12].path);assert.equal(created.length,1);
 });
-test('playback preloads one frame and retains the visible image until its replacement loads',()=>{
-  const {player,created,states,update}=setup();update(12,true);
+test('playback retains the outgoing image until the crossfade finishes',()=>{
+  const {player,created,states,update,timers,finishFade}=setup();update(12,true);
   assert.equal(created.length,1);created[0].events.load();assert.equal(created.length,2);
   assert(created[1].url.includes('frame0'));assert.equal(created[1].opacity,0);
   update(0,true);assert.equal(player.displayed,frames[12].path);assert.equal(created[0].removed,false);
   created[1].events.load();assert.equal(player.displayed,frames[0].path);
-  assert.equal(created[0].removed,true);assert.equal(player.layers.size,2);
+  assert.equal(created[0].removed,false);assert.equal(player.layers.size,3);
+  assert.equal(created[0].opacity,0);assert.equal(created[1].opacity,.72);
+  assert.equal([...timers.values()][0].ms,450);
+  finishFade();assert.equal(created[0].removed,true);assert.equal(player.layers.size,2);
   assert.equal(states.at(-1).status,'ready');
 });
 test('opacity changes reuse preload, scrubbing remains bounded and late events are detached',()=>{
@@ -53,4 +57,25 @@ test('failed replacement tiles cannot relabel an old image as the new frame',()=
   created[1].events.tileerror();created[1].events.load();
   assert.equal(player.displayed,frames[12].path);assert.equal(states.at(-1).status,'error');
   assert.equal(states.at(-1).path,frames[12].path);
+});
+
+test('rapid frame changes cancel old fades, keep at most one outgoing grid and clean up timers',()=>{
+  const {player,created,update,timers,finishFade}=setup();
+  update(12,true);created[0].events.load();created[1].events.load();update(0,true);
+  assert.equal(player.fading,frames[12].path);
+  const next=created.find(l=>l.url.includes('frame1/'));next.events.load();update(1,true);
+  assert.equal(player.fading,frames[0].path);assert.equal(created[0].removed,true);
+  assert.equal(player.layers.size,3);assert.equal(timers.size,1);
+  finishFade();assert.equal(player.layers.size,2);
+  const following=created.find(l=>l.url.includes('frame2/'));following.events.load();update(2,true);
+  assert.equal(timers.size,1);player.destroy();assert.equal(timers.size,0);
+  assert(created.every(l=>l.removed));
+});
+
+test('scrubbing back during a crossfade reuses the outgoing frame',()=>{
+  const {player,created,update,finishFade}=setup();update(12);created[0].events.load();
+  update(0);created[1].events.load();update(12);
+  assert.equal(created.length,2);assert.equal(player.displayed,frames[12].path);
+  assert.equal(created[0].removed,false);assert.equal(player.fading,frames[0].path);
+  finishFade();assert.equal(created[1].removed,true);assert.equal(player.layers.size,1);
 });
