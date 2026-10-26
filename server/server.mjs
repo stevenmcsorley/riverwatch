@@ -187,7 +187,7 @@ const server = http.createServer(async (req, res) => {
         station.stageScale ? json(station.stageScale) : Promise.resolve(null),
       ]);
       const items = (history.items || []).filter(r => Number.isFinite(Number(r.value))).map(r => ({ dateTime: r.dateTime, value: Number(r.value) })).sort((a,b) => new Date(a.dateTime)-new Date(b.dateTime)).slice(-96);
-      const typicalRangeHigh = Number(scale?.items?.typicalRangeHigh);
+      const typicalRangeHigh = scale?.items?.typicalRangeHigh == null ? NaN : Number(scale.items.typicalRangeHigh);
       const rad = d => d * Math.PI / 180;
       let nearestRain = null, nearestKm = Infinity;
       for (const rain of rainfallStations) {

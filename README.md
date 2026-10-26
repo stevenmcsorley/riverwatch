@@ -56,7 +56,10 @@ The short screen recording shows the central England alert view with live radar 
 - **Gauge details:** latest measured level, recent rate of change, reading time and published typical-range high where the station supplies one.
 - **Hydrograph:** today's actual readings for the selected gauge, with bars for the nearest Environment Agency rainfall gauge when one is available within 30 km. The rainfall series is converted from its published accumulation interval to mm/h and identifies the gauge distance. The plotted river range follows the gauge readings; a typical-range reference outside that range is called out separately. Typical range is not a flood threshold.
 - **Official alerts:** current Environment Agency flood alerts and warnings, sorted by severity. The highest-severity active alert is focused on startup. Select any alert card or map point to fly to its published area coordinate and nearest reporting gauge.
-- **Stations and history:** browse gauge readings or inspect the selected gauge's hydrograph.
+- **Stations and history:** search by station, river or place with keyboard navigation, browse gauge readings or inspect the selected gauge's hydrograph. Save favourite gauges and share links that open a particular station.
+- **Preferences:** basemap, overlay switches, opacity, selected station and favourites persist in this browser. Reset display settings keeps favourites and the selected station. Storage failures are shown without blocking the dashboard.
+- **Feed status:** unavailable warnings are distinguished from an empty feed; delayed or missing observations and unpublished typical ranges have explicit labels. Readings older than one hour are marked delayed.
+- **Weather warnings:** browse all, in-force or upcoming Met Office warnings and zoom to their published polygon areas.
 
 The map is designed as the first module of a broader public-data alert hub. Additional dashboards can use the same visual language while keeping each feed's source, update rate, measurements and alert rules distinct.
 
